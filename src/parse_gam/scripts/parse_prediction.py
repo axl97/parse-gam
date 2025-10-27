@@ -2,12 +2,24 @@ from pathlib import Path
 import json
 
 import geopandas as gpd
-from shapely.geometry import Polygon
 import pandas as pd
 import argparse
 from tqdm import tqdm
+from parse_gam.utils import (
+    deduplicate_gdf,
+    to_polygon,
+    project_onto_board,
+    parse_yolo_predictions,
+)
 
-CLASS_MAPPING = {"BOARD": 0, "CHECKER_P1": 1, "CHECKER_P2": 2, "DIE": 3, "POINT": 4}
+CLASS_MAPPING = {
+    "BOARD": 0,
+    "CHECKER_P1": 1,
+    "CHECKER_P2": 2,
+    "DIE": 3,
+    "POINT": 5,
+    "HAND": 4,
+}
 
 
 def __parse_args():
@@ -16,73 +28,6 @@ def __parse_args():
     args.add_argument("output", type=Path)
 
     return args.parse_args()
-
-
-def to_polygon(x):
-    return Polygon(
-        [
-            (x.x_center - x.width / 2, x.y_center - x.height / 2),
-            (x.x_center + x.width / 2, x.y_center - x.height / 2),
-            (x.x_center + x.width / 2, x.y_center + x.height / 2),
-            (x.x_center - x.width / 2, x.y_center + x.height / 2),
-        ]
-    )
-
-
-def parse_yolo_predictions(predictions_path):
-    df = pd.read_csv(
-        predictions_path,
-        names=["clas", "x_center", "y_center", "width", "height", "conf"],
-        delimiter=" ",
-    )
-
-    df["geometry"] = df.apply(to_polygon, axis="columns")
-
-    gdf = gpd.GeoDataFrame(df)
-
-    return gdf
-
-
-def project_onto_board(row):
-    return {
-        "clas": row["clas_pred"],
-        "conf": row["conf_pred"],
-        "board_index": row["board_index"],
-        "x_center": (row.x_center_pred - row.x_center_board + row.width_board / 2)
-        / row.width_board,
-        "y_center": (row.y_center_pred - row.y_center_board + row.height_board / 2)
-        / row.height_board,
-        "width": row.width_pred / row.width_board,
-        "height": row.height_pred / row.height_board,
-    }
-
-
-def iou(p1, p2):
-    inter = p1.intersection(p2).area
-    union = p1.union(p2).area
-    return inter / union if union > 0 else 0
-
-
-def deduplicate_gdf(gdf, iou_threshold: float = 0.8):
-    """Deduplicate a geopandas frame based on IoU between geometries."""
-    keep = []
-    dropped = set()
-
-    for i, geom_i in enumerate(gdf.geometry):
-        if i in dropped:
-            continue
-
-        keep.append(i)
-
-        for j in range(i + 1, len(gdf)):
-            if j in dropped:
-                continue
-            geom_j = gdf.geometry[j]
-
-            if iou(geom_i, geom_j) > iou_threshold:
-                dropped.add(j)
-
-    return gdf.loc[keep].reset_index(drop=True)
 
 
 def parse_half_board_state(gdf):
@@ -115,6 +60,24 @@ def parse_half_board_state(gdf):
             else:
                 raise RuntimeError()
 
+            class_counts = d.groupby("clas").size().reset_index(name="count")
+
+            # Find the class with the most lines
+            top_classes = class_counts.nlargest(1, "count", keep="all")
+
+            # Determine the selected class
+            if top_classes.empty:
+                # No classes found, default to CHECKER_P2
+                selected_class_index = CLASS_MAPPING["CHECKER_P2"]
+            elif len(top_classes) > 1 and top_classes["count"].nunique() == 1:
+                # Multiple classes tied for the highest count, use mean confidence to break tie
+                mean_confidence = d.groupby("clas")["conf"].mean()
+                selected_class = mean_confidence.idxmax()
+                selected_class_index = selected_class
+            else:
+                # Single class with the highest count
+                selected_class_index = int(top_classes["clas"].iloc[0])
+            """
             # Select which player by majority vote
             class_index_temp = (
                 d.groupby("clas")
@@ -123,15 +86,19 @@ def parse_half_board_state(gdf):
                 .nlargest(1, "board_index")["clas"]
             )
 
+            import pdb
+
+            pdb.set_trace()
             if class_index_temp.shape[0] == 0:
                 class_index = CLASS_MAPPING["CHECKER_P2"]
             else:
                 class_index = class_index_temp.values[0]
+            """
 
             num_checkers = deduplicate_gdf(d).shape[0]
             val = (
                 num_checkers
-                if class_index == CLASS_MAPPING["CHECKER_P2"]
+                if selected_class_index == CLASS_MAPPING["CHECKER_P2"]
                 else -num_checkers
             )
 
@@ -144,6 +111,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
     BOARD_CLASS = CLASS_MAPPING["BOARD"]
     CHECKER_P1_CLASS = CLASS_MAPPING["CHECKER_P1"]
     CHECKER_P2_CLASS = CLASS_MAPPING["CHECKER_P2"]
+    HAND_CLASS = CLASS_MAPPING["HAND"]
 
     # There are two 'boards' give the one to the left index 0 and the one to the right index 1
     boards = (
@@ -158,23 +126,30 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
 
     if boards.shape[0] != 2:
         print("Not two board predictions")
-        return None
+        return {"status": "UNPARSEABLE"}
 
     # Project each prediction on a [0,1] coordinate system within its respective board
     projected = boards.sjoin(
         predictions, how="inner", lsuffix="board", rsuffix="pred"
     ).apply(project_onto_board, axis="columns", result_type="expand")
 
-    projected = projected[projected.clas.isin([CHECKER_P1_CLASS, CHECKER_P2_CLASS])]
+    projected = projected[
+        projected.clas.isin([CHECKER_P1_CLASS, CHECKER_P2_CLASS, HAND_CLASS])
+    ]
 
     if projected.shape[0] == 0:
         print("No non-board predictions")
-        return None
-    # Drop all predictions expcept ofr the Checkers P1 and Checkers P2 classes
+        return {"STATUS": "unparseable"}
 
+    # Drop all predictions expcept ofr the Checkers P1 and Checkers P2 classes
     projected["geometry"] = projected.apply(to_polygon, axis="columns")
 
     projected = gpd.GeoDataFrame(projected)
+
+    # Check if there is a hand within any of the boards. If so say return a status OBSCURED
+    if (projected.clas == HAND_CLASS).sum() > 0:
+        print("Hand detected")
+        return {"status": "OBSCURED"}
 
     # Now we have all Checker predictions with [0,1] x and y coordinates within their respective board along with board index
     # Count checker positions in each board half separately and then merge the board-half states
@@ -195,7 +170,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
 
     full_state["status"] = "VALID"
 
-    return full_state, projected
+    return full_state
 
 
 def parse_single_prediction(prediction_path, output_path):
@@ -207,7 +182,7 @@ def parse_single_prediction(prediction_path, output_path):
         print("Unable to parse board state")
         board_state = {"status": "UNPARSEABLE"}
     else:
-        board_state, projected_predictions = parse_output
+        board_state = parse_output
 
     with output_path.open("w") as io:
         json.dump(board_state, io, indent=4)

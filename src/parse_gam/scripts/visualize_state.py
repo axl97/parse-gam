@@ -18,7 +18,7 @@ def __parse_args():
     return args.parse_args()
 
 
-def visualize_state(state):
+def visualize_state(state, show=False):
     f, ax = plt.subplots(1, 1, figsize=(16, 8))
 
     left_board = patches.Rectangle(
@@ -71,7 +71,7 @@ def visualize_state(state):
                     )
 
                     plt.text(x, y, str(abs_count), ha="center", va="center", fontsize=8)
-    elif status == "UNPARSEABLE":
+    elif status in ["UNPARSEABLE", "OBSCURED"]:
         ax.text(
             x=-1.0,
             y=0,
@@ -89,13 +89,17 @@ def visualize_state(state):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-    plt.close(f)
+    if show:
+        plt.show()
+        return f, ax
+    else:
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+        plt.close(f)
 
-    buf.seek(0)
+        buf.seek(0)
 
-    return buf
+        return buf
 
 
 def join_state_and_frame_visualizations(state_vis, frame_path, output_path):

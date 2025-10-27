@@ -8,6 +8,7 @@ dependencies = [
     "folium>=0.20.0",
     "geopandas>=1.1.1",
     "ipython>=9.6.0",
+    "jupyter>=1.1.1",
     "mapclassify>=2.10.0",
     "matplotlib>=3.10.7",
     "numpy>=2.3.3",
@@ -23,3 +24,4 @@ build-backend = "hatchling.build"
 [project.scripts]
 parse-yolo-predictions = "parse_gam.scripts.parse_prediction:main"
 visualize-state = "parse_gam.scripts.visualize_state:main"
+smooth-frame-predictions = "parse_gam.scripts.smooth_frame_predictions:main"
