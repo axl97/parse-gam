@@ -17,8 +17,8 @@ CLASS_MAPPING = {
     "CHECKER_P1": 1,
     "CHECKER_P2": 2,
     "DIE": 3,
-    "POINT": 5,
     "HAND": 4,
+    "POINT": 5,
 }
 
 
@@ -40,6 +40,9 @@ def parse_half_board_state(gdf):
     state = {}
 
     CHECKER_POINT_X_TOLERANCE = 0.07
+    CHECKER_P1_CLASS = CLASS_MAPPING["CHECKER_P1"]
+    CHECKER_P2_CLASS = CLASS_MAPPING["CHECKER_P2"]
+    DIE_CLASS = CLASS_MAPPING["DIE"]
 
     for half in ["UPPER", "LOWER"]:
         for h_point_index in range(0, 6):
@@ -49,12 +52,14 @@ def parse_half_board_state(gdf):
                 d = gdf[
                     (gdf.y_center > 0.5)
                     & ((gdf.x_center - h_pos).abs() < CHECKER_POINT_X_TOLERANCE)
+                    & (gdf.clas.isin([CHECKER_P1_CLASS, CHECKER_P2_CLASS]))
                 ].reset_index(drop=True)
                 point_index = 6 - h_point_index
             elif half == "UPPER":
                 d = gdf[
                     (gdf.y_center < 0.5)
                     & ((gdf.x_center - h_pos).abs() < CHECKER_POINT_X_TOLERANCE)
+                    & (gdf.clas.isin([CHECKER_P1_CLASS, CHECKER_P2_CLASS]))
                 ].reset_index(drop=True)
                 point_index = 7 + h_point_index
             else:
@@ -77,23 +82,6 @@ def parse_half_board_state(gdf):
             else:
                 # Single class with the highest count
                 selected_class_index = int(top_classes["clas"].iloc[0])
-            """
-            # Select which player by majority vote
-            class_index_temp = (
-                d.groupby("clas")
-                .count()
-                .reset_index()
-                .nlargest(1, "board_index")["clas"]
-            )
-
-            import pdb
-
-            pdb.set_trace()
-            if class_index_temp.shape[0] == 0:
-                class_index = CLASS_MAPPING["CHECKER_P2"]
-            else:
-                class_index = class_index_temp.values[0]
-            """
 
             num_checkers = deduplicate_gdf(d).shape[0]
             val = (
@@ -104,6 +92,11 @@ def parse_half_board_state(gdf):
 
             state[f"Point_{point_index}"] = val
 
+    # Detect if dice are on the board
+    num_dice = deduplicate_gdf(gdf[gdf.clas == DIE_CLASS], iou_threshold=0.4).shape[0]
+
+    state["dice"] = num_dice
+
     return state
 
 
@@ -112,6 +105,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
     CHECKER_P1_CLASS = CLASS_MAPPING["CHECKER_P1"]
     CHECKER_P2_CLASS = CLASS_MAPPING["CHECKER_P2"]
     HAND_CLASS = CLASS_MAPPING["HAND"]
+    DIE_CLASS = CLASS_MAPPING["DIE"]
 
     # There are two 'boards' give the one to the left index 0 and the one to the right index 1
     boards = (
@@ -134,7 +128,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
     ).apply(project_onto_board, axis="columns", result_type="expand")
 
     projected = projected[
-        projected.clas.isin([CHECKER_P1_CLASS, CHECKER_P2_CLASS, HAND_CLASS])
+        projected.clas.isin([CHECKER_P1_CLASS, CHECKER_P2_CLASS, HAND_CLASS, DIE_CLASS])
     ]
 
     if projected.shape[0] == 0:
@@ -167,6 +161,9 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
             full_state[f"Point_{x}"] = state_board_1[f"Point_{x - 6}"]
         elif x > 18 and x <= 24:
             full_state[f"Point_{x}"] = state_board_2[f"Point_{x - 12}"]
+
+    full_state["board_1_dice"] = state_board_1["dice"]
+    full_state["board_2_dice"] = state_board_2["dice"]
 
     full_state["status"] = "VALID"
 

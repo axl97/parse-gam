@@ -54,6 +54,8 @@ def deduplicate_gdf(gdf, iou_threshold: float = 0.8):
     keep = []
     dropped = set()
 
+    gdf = gdf.reset_index(drop=True)
+
     for i, geom_i in enumerate(gdf.geometry):
         if i in dropped:
             continue

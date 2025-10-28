@@ -35,6 +35,10 @@ def extract_index(filename):
 def smooth_states(df, imputation_method="linear", window_size=9):
     point_cols = [x for x in df.columns if x.startswith("Point_")]
 
+    dice_cols = ["board_1_dice", "board_2_dice"]
+
+    smooth_cols = [*point_cols, *dice_cols]
+
     smoothed_df = df.copy()
 
     smoothed_df["file_index"] = smoothed_df.filename.apply(extract_index)
@@ -44,7 +48,7 @@ def smooth_states(df, imputation_method="linear", window_size=9):
     # Drop frames that are invalid
     smoothed_df = smoothed_df[smoothed_df.status == "VALID"]
 
-    for col in point_cols:
+    for col in smooth_cols:
         if imputation_method == "linear":
             smoothed_df[col] = smoothed_df[col].interpolate(
                 method="linear", limit_direction="both"

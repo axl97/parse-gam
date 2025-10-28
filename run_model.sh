@@ -13,6 +13,7 @@ uv run yolo \
 	save_frames=true \
 	save_conf=true \
 	show_labels=false \
+	imgsz=1280 \
 	classes=0,1,2,3,4
 
 
