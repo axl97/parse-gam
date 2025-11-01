@@ -12,6 +12,7 @@ def __parse_args():
     parser.add_argument("output", type=Path)
 
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--imgsz", type=int, default=1280)
 
     return parser.parse_args()
 
@@ -44,14 +45,19 @@ def main():
         batch_counter += 1
 
         if batch_counter >= args.batch_size or not success:
-            result = model(frame_buffer, batch=True, verbose=False)
+            result = model(
+                frame_buffer,
+                batch=True,
+                verbose=False,
+                imgsz=args.imgsz,
+            )
 
             for r in result:
                 frame_counter += 1
                 r.save_txt(
                     prediction_dir / f"frame_{frame_counter}.txt", save_conf=True
                 )
-                r.save(frames_dir / f"frame_{frame_counter}.jpg")
+                r.save(frames_dir / f"frame_{frame_counter}.jpg", labels=False)
             pbar.update(len(frame_buffer))
             frame_buffer.clear()
             batch_counter = 0

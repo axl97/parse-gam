@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 
+import multiprocessing
 import geopandas as gpd
 import pandas as pd
 import argparse
@@ -26,6 +27,8 @@ def __parse_args():
     args = argparse.ArgumentParser()
     args.add_argument("predictions", type=Path)
     args.add_argument("output", type=Path)
+
+    args.add_argument("--num-proc", type=int, default=4)
 
     return args.parse_args()
 
@@ -119,7 +122,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
     boards = deduplicate_gdf(boards)
 
     if boards.shape[0] != 2:
-        print("Not two board predictions")
+        # print("Not two board predictions")
         return {"status": "UNPARSEABLE"}
 
     # Project each prediction on a [0,1] coordinate system within its respective board
@@ -132,7 +135,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
     ]
 
     if projected.shape[0] == 0:
-        print("No non-board predictions")
+        # print("No non-board predictions")
         return {"STATUS": "unparseable"}
 
     # Drop all predictions expcept ofr the Checkers P1 and Checkers P2 classes
@@ -142,7 +145,7 @@ def parse_board_state(predictions: gpd.GeoDataFrame) -> dict | None:
 
     # Check if there is a hand within any of the boards. If so say return a status OBSCURED
     if (projected.clas == HAND_CLASS).sum() > 0:
-        print("Hand detected")
+        # print("Hand detected")
         return {"status": "OBSCURED"}
 
     # Now we have all Checker predictions with [0,1] x and y coordinates within their respective board along with board index
@@ -176,13 +179,28 @@ def parse_single_prediction(prediction_path, output_path):
     parse_output = parse_board_state(predictions)
 
     if parse_output is None:
-        print("Unable to parse board state")
+        # print("Unable to parse board state")
         board_state = {"status": "UNPARSEABLE"}
     else:
         board_state = parse_output
 
+    # Add file index
+    try:
+        file_index = int(Path(prediction_path).stem.split("_")[-1])
+    except Exception as _:
+        file_index = None
+
+    board_state["file_index"] = file_index
+
     with output_path.open("w") as io:
         json.dump(board_state, io, indent=4)
+
+
+def _process_file(args):
+    pred, output_dir = args
+    output_name = output_dir / pred.with_suffix(".json").name
+    parse_single_prediction(pred, output_name)
+    return pred
 
 
 def main():
@@ -190,10 +208,24 @@ def main():
 
     if args.predictions.is_dir():
         args.output.mkdir(exist_ok=True)
+        all_preds = list(args.predictions.iterdir())
+        if args.num_proc > 1:
+            with multiprocessing.Pool(processes=args.num_proc) as pool:
+                list(
+                    tqdm(
+                        pool.imap_unordered(
+                            _process_file,
+                            [(pred, args.output) for pred in all_preds],
+                            chunksize=max(1, len(all_preds) // (args.num_proc * 20)),
+                        ),
+                        total=len(all_preds),
+                        desc="Parsing predictions",
+                    )
+                )
+        else:
+            for pred in tqdm(all_preds, desc="Parsing predictions"):
+                _process_file((pred, args.output))
 
-        for pred in tqdm(args.predictions.iterdir()):
-            output_name = args.output / pred.with_suffix(".json").name
-            parse_single_prediction(pred, output_name)
     else:
         parse_single_prediction(args.predictions, args.output)
 
